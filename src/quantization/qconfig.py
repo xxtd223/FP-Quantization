@@ -6,8 +6,9 @@ def prepare_quantization_config(
     pseudoquantization: bool = False
 ) -> dict[str, Any]:
     if format in ["mxfp", "nvfp", "hif"]:
+        forward_dtype_str = "mxfp4" if format == "hif" else f"{format}4"  # 李代桃僵
         return {
-            "forward_dtype": f"{format}4",
+            "forward_dtype": forward_dtype_str,
             "backward_dtype": "bf16",
             "forward_method": "abs_max",
             "hadamard_group_size":hadamard_group_size,
