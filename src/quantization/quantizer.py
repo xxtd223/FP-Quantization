@@ -106,26 +106,35 @@ class Quantizer:
         self._track_global_scale = (self.scale_precision == ScalePrecision.E4M3)
 
     def _reshape_before_quantization(
-        self, 
-        x: torch.Tensor, 
-        scales: Optional[torch.Tensor] = None,
-        zeros: Optional[torch.Tensor] = None
+            self,
+            x: torch.Tensor,
+            scales: Optional[torch.Tensor] = None,
+            zeros: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         if self.group_size:
             dim = x.ndim - 1 if self.dim == -1 else self.dim
             num_groups = x.shape[dim] // self.group_size
+
+            # 1. 先切分 Input X
+            # x 从 (..., 2048) 变为 (..., 32, 64)
             x = split_dim(x, num_groups, dim)
 
+            # 2. 智能处理 Scales
             if scales is not None:
-                # HiF 情况
-                if scales.shape == x.shape or (
-                        scales.ndim == x.ndim and scales.shape[dim] == x.shape[dim] * self.group_size):
+                # 检查 scales 的维度。
+                # x.shape[dim] 此时已经是 num_groups (32)
+                # 如果 scales 在该维度的长度等于 num_groups * group_size (32*64=2048)，
+                # 说明 Scales 是全尺寸 (HiF4 模式)，需要和 x 一样被 split。
+                if scales.shape[dim] == x.shape[dim] * self.group_size:
                     scales = split_dim(scales, num_groups, dim)
                 else:
-                    # MXFP/NVFP 情况
+                    # 否则说明 Scales 是组尺寸 (标准模式，只有 32 个)，
+                    # 只需要 unsqueeze 对齐维度
                     scales = scales.unsqueeze(dim + 1)
+
+            # 3. 智能处理 Zeros (逻辑同上)
             if zeros is not None:
-                if zeros.shape == x.shape:
+                if zeros.shape[dim] == x.shape[dim] * self.group_size:
                     zeros = split_dim(zeros, num_groups, dim)
                 else:
                     zeros = zeros.unsqueeze(dim + 1)
