@@ -14,16 +14,16 @@ from ..helpers import split_dim
 
 def get_e6m2_rec_torch(sf_e6m2: torch.Tensor) -> torch.Tensor:
     """
-    E6M2 格式的 4选1 查表  M7 = (4 - M2)/(4 + M2) * 128
+    E6M2 格式的 4选1 查表
     """
     # 提取阶码 E6
     e6 = torch.floor(torch.log2(sf_e6m2.clamp(min=1e-20)))
 
     # 提取 2-bit 尾数索引 M2 (0, 1, 2, 3)
-    # 计算方法：sf_norm = sf_e6m2 / 2^e6，然后映射到 0-3
-    m2 = torch.round(sf_e6m2 * torch.pow(2.0, -e6 + 2)) - 4
-    m2 = m2.clamp(0, 3)  # 确保索引合法
+    m2 = torch.round(sf_e6m2 * torch.exp2(-e6 + 2)) - 4
+    m2 = m2.clamp(0, 3)
 
+    # 4选1 查表确定 M7 值, M7 = (4 - M2)/(4 + M2) * 128
     # M2: 0 (1.00) -> 0.0
     # M2: 1 (1.25) -> 77.0
     # M2: 2 (1.50) -> 43.0
@@ -32,12 +32,10 @@ def get_e6m2_rec_torch(sf_e6m2: torch.Tensor) -> torch.Tensor:
                      torch.where(m2 == 1, 77.0,
                                  torch.where(m2 == 2, 43.0, 18.0)))
 
-    # 如果 M2 为 0 (数值为1.0), 倒数阶码为 -e6
-    # 否则阶码多减 1
+    # 阶码逻辑，不是0要多减一
     e8 = torch.where(m2 == 0, -e6, -e6 - 1)
+    res = torch.exp2(e8) * (1.0 + m7 / 128.0)
 
-    # 最终组合公式: 2^E8 * (1 + M7 * 2^-7)
-    res = torch.pow(2.0, e8) * (1.0 + m7 * torch.pow(2.0, -7.0))
     return res
 
 # Utility function for inversion.
@@ -67,12 +65,12 @@ class Quantizer:
         # hif 格式的特殊处理
         if format == "hif":
             group_size = 64
+            self.granularity = QuantizationGranularity.GROUP
             symmetric = True
             scale_precision = "e6m2"
         # Sanity checks
-        if format in ["fp", "nvfp", "mxfp", "hif"]:
+        if format in ["fp", "nvfp", "mxfp",]:
             assert symmetric, "Only symmetric quantization is supported for floating point formats."
-
         if granularity == "group":
             assert group_size is not None, "Group size must be specified when granularity is 'group'."
         else:
@@ -117,10 +115,21 @@ class Quantizer:
             dim = x.ndim - 1 if self.dim == -1 else self.dim
             num_groups = x.shape[dim] // self.group_size
             x = split_dim(x, num_groups, dim)
+
             if scales is not None:
-                scales = scales.unsqueeze(dim + 1)
+                # HiF 情况
+                if scales.shape == x.shape or (
+                        scales.ndim == x.ndim and scales.shape[dim] == x.shape[dim] * self.group_size):
+                    scales = split_dim(scales, num_groups, dim)
+                else:
+                    # MXFP/NVFP 情况
+                    scales = scales.unsqueeze(dim + 1)
             if zeros is not None:
-                zeros = zeros.unsqueeze(dim + 1)
+                if zeros.shape == x.shape:
+                    zeros = split_dim(zeros, num_groups, dim)
+                else:
+                    zeros = zeros.unsqueeze(dim + 1)
+
         return x, scales, zeros
 
     def get_quantization_params(
@@ -168,7 +177,9 @@ class Quantizer:
 
             # 将 scales 压平回原始维度对应的形状，以便 quantize 函数处理
             # 结果形状应为 (..., num_groups, 64)
-            return total_scale, torch.zeros_like(total_scale)
+            scales = total_scale.reshape(x.shape)
+            zeros = torch.zeros_like(scales)
+            return scales, zeros
 
         if self.granularity == QuantizationGranularity.GROUP:
             reduce_dim = dim + 1
