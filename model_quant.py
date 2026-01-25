@@ -10,6 +10,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import lm_eval
 from lm_eval.utils import make_table
 from lm_eval.models.huggingface import HFLM
+import lm_eval.models
+import lm_eval.tasks
+import lm_eval.api
+from lm_eval.tasks import TaskManager
+from lm_eval.evaluator import simple_evaluate
 
 from src.metrics.perplexity import compute_perplexity
 from src.transforms.transforms import TRANSFORMS
@@ -287,7 +292,7 @@ def parse_args():
         "--lm_eval_tasks",
         nargs="+",
         type=str,
-        default=["mmlu_cot_llama", "arc_challenge_llama", "gsm8k_llama", "hellaswag", "winogrande", "truthfulqa"],
+        default=["mmlu", "arc_challenge", "hellaswag", "winogrande","piqa"], # 添加评估任务
         help="OpenLLMv1 tasks to evaluate after quantization."
     )
     parser.add_argument(
@@ -422,7 +427,7 @@ def main():
             batch_size=args.lm_eval_batch_size,
             max_length=4096, # from open LLM openllm
         )
-        task_manager = lm_eval.tasks.TaskManager()
+        task_manager = TaskManager()
 
         # Winogrande (5-shot)
         if "winogrande" in args.lm_eval_tasks:
@@ -446,7 +451,29 @@ def main():
             )["results"]
             results.update(task_results)
             print(make_table({"results": task_results, "versions": {}, "n-shot": {}, "higher_is_better": {}}))
-        # GSM8K Llama-3.1
+        # ARC-Challenge (5-shot) - 常识推理能力
+        if "arc_challenge" in args.lm_eval_tasks:
+            task_results = lm_eval.simple_evaluate(
+                model=lm,
+                tasks="arc_challenge",
+                num_fewshot=5,
+                batch_size=args.lm_eval_batch_size,
+                task_manager=task_manager,
+            )["results"]
+            results.update(task_results)
+            print(make_table({"results": task_results, "versions": {}, "n-shot": {}, "higher_is_better": {}}))
+        # PIQA (0-shot) - 物理常识
+        if "piqa" in args.lm_eval_tasks:
+            task_results = lm_eval.simple_evaluate(
+                model=lm,
+                tasks="piqa",
+                num_fewshot=0,
+                batch_size=args.lm_eval_batch_size,
+                task_manager=task_manager,
+            )["results"]
+            results.update(task_results)
+            print(make_table({"results": task_results, "versions": {}, "n-shot": {}, "higher_is_better": {}}))
+        # GSM8K Llama-3.1 - 数学逻辑
         if "gsm8k_llama" in args.lm_eval_tasks:
             task_results = lm_eval.simple_evaluate(
                 model=lm,
@@ -457,19 +484,19 @@ def main():
                 task_manager=task_manager,
             )["results"]
             results.update(task_results)
-            print(make_table({"results": task_results, "versions": {}, "n-shot": {}, "higher_better": {}}))
-        # MMLU CoT Llama-3.1
-        if "mmlu_cot_llama" in args.lm_eval_tasks:
+            print(make_table({"results": task_results, "versions": {}, "n-shot": {}, "higher_is_better": {}}))
+        # MMLU - 全科知识选择题
+        if "mmlu" in args.lm_eval_tasks:
             task_results = lm_eval.simple_evaluate(
                 model=lm,
-                tasks="mmlu_cot_llama",
+                tasks="mmlu",
+                num_fewshot=5,
                 batch_size=args.lm_eval_batch_size,
-                apply_chat_template=True,
-                fewshot_as_multiturn=True,
                 task_manager=task_manager,
             )["results"]
             results.update(task_results)
-            print(make_table({"results": task_results, "versions": {}, "n-shot": {}, "higher_better": {}}))
+            print(make_table({"results": task_results, "versions": {}, "n-shot": {}, "higher_is_better": {}}))
+
         # Log results
         if args.log_wandb:
             wandb.log({"eval/openllm": results}) 

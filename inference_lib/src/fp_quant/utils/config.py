@@ -8,6 +8,7 @@ class FPQuantDtype(Enum):
     NVFP4 = "nvfp4"
     MXFP8 = "mxfp8"
     BF16 = "bf16"
+    HiF4 = "hif4"
 
 
 QuantMethod = Literal["quest", "abs_max"]

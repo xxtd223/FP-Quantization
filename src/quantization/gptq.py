@@ -20,7 +20,7 @@ from ..utils.common_utils import clear_device_cache, to, maybe_first_element
 from ..utils.model_utils import InputCollector, ForwardInterrupt, get_attention_layer, get_mlp_layer, get_number_of_rows_and_cols
 
 '''
-标准 GPTQ 量化算法的实现
+MR-GPTQ 量化算法的实现
 '''
 
 try:
