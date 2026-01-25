@@ -83,6 +83,9 @@ def rtn_quantization(
     # Iterate over transformer blocks
     for block_idx, block in enumerate(blocks):
         print(f"Processing block {block_idx}...")
+
+        torch.cuda.empty_cache()
+
         if args.cpu_offload_modules:
             block.to(device)
         # 1. Init transforms
