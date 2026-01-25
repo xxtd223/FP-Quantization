@@ -132,7 +132,7 @@ class Quantizer:
                     # 只需要 unsqueeze 对齐维度
                     scales = scales.unsqueeze(dim + 1)
 
-            # 3. 智能处理 Zeros (逻辑同上)
+            # 3. 智能处理 Zeros
             if zeros is not None:
                 if zeros.shape[dim] == x.shape[dim] * self.group_size:
                     zeros = split_dim(zeros, num_groups, dim)
@@ -158,36 +158,51 @@ class Quantizer:
             x_reshaped, _, _ = self._reshape_before_quantization(x)
             abs_x = x_reshaped.abs()
 
-            # 1. Level-1: E6M2 (每 64 个元素一个)
+            # --- Level-1: E6M2 ---
             vmax = abs_x.max(dim=-1, keepdim=True).values
             sf_bf16 = vmax / 7.05
+
+            # 模拟 E6M2
             sf_log2 = torch.log2(sf_bf16.clamp(min=1e-20))
             e6m2_exp = torch.floor(sf_log2).clamp(-48.0, 15.0)
-            sf_norm = sf_bf16 / torch.pow(2, e6m2_exp)
+            sf_norm = sf_bf16 / torch.exp2(e6m2_exp)  # 优化：用 exp2
             m2_val = torch.round(sf_norm * 4.0) / 4.0
-            sf_e6m2 = m2_val * torch.pow(2, e6m2_exp)
-            # 使用 4选1 查表法计算倒数
+            sf_e6m2 = m2_val * torch.exp2(e6m2_exp)  # 优化：用 exp2
+
+            # 计算倒数 (查表法)
             e6m2_rec = get_e6m2_rec_torch(sf_e6m2)
 
-            # 2. Level-2: E1_8 (每 8 个元素共享)
+            # --- Level-2: E1_8 ---
+            # abs_x 的形状是 (..., Groups, 64)
+            # view 成 (..., Groups, 8, 8) 然后在最后一个维度求 max
             v8 = abs_x.view(*abs_x.shape[:-1], 8, 8).max(dim=-1).values
             e1_8 = torch.where(v8 * e6m2_rec >= 4.0, 1.0, 0.0)
 
-            # 3. Level-3: E1_16 (每 4 个元素共享)
+            # --- Level-3: E1_16 ---
+            # view 成 (..., Groups, 16, 4)
             v16 = abs_x.view(*abs_x.shape[:-1], 16, 4).max(dim=-1).values
-            e1_8_for_v16 = e1_8.unsqueeze(-1).repeat(1, 1, 1, 2).flatten(-2) if x.ndim > 1 else e1_8.repeat_interleave(
-                2, dim=-1)
-            e1_16 = torch.where(v16 * e6m2_rec * torch.pow(2, -e1_8_for_v16) >= 2.0, 1.0, 0.0)
 
-            # 4. 合成 Total Scale (形状为 [..., N/64, 64])
+            # 动态 expand e1_8 以匹配 v16
+            # e1_8 是每 8 个元素 1 个值，v16 是每 4 个元素 1 个值 -> 需要把 e1_8 扩展 2 倍
+            e1_8_for_v16 = e1_8.unsqueeze(-1).expand(*e1_8.shape, 2).flatten(-2)
+
+            e1_16 = torch.where(v16 * e6m2_rec * torch.exp2(-e1_8_for_v16) >= 2.0, 1.0, 0.0)
+
+            # --- 合成 Total Scale ---
+            # 动态 expand
+            # e1_8 (每8个1值) -> 扩展8倍 -> (每1个1值)
             e1_8_full = e1_8.unsqueeze(-1).expand(*e1_8.shape, 8).flatten(-2)
-            e1_16_full = e1_16.unsqueeze(-1).expand(*e1_16.shape, 4).flatten(-2)
-            total_scale = sf_e6m2 * torch.pow(2, e1_8_full + e1_16_full)
 
-            # 将 scales 压平回原始维度对应的形状，以便 quantize 函数处理
-            # 结果形状应为 (..., num_groups, 64)
-            scales = total_scale.reshape(x.shape)
+            # e1_16 (每4个1值) -> 扩展4倍 -> (每1个1值)
+            e1_16_full = e1_16.unsqueeze(-1).expand(*e1_16.shape, 4).flatten(-2)
+
+            # total_scale = sf_e6m2 * 2^(E1_8 + E1_16)
+            total_scale = sf_e6m2 * torch.exp2(e1_8_full + e1_16_full)
+
+            # 转换精度并清理
+            scales = total_scale.reshape(x.shape).to(x.dtype)
             zeros = torch.zeros_like(scales)
+
             return scales, zeros
 
         if self.granularity == QuantizationGranularity.GROUP:
