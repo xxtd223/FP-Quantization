@@ -2,6 +2,10 @@ import torch
 import triton
 import triton.language as tl
 
+'''
+实现HiF4量化-反量化（伪量化）
+'''
+
 
 @tl.jit
 def get_e6m2_rec(sf_e6m2):

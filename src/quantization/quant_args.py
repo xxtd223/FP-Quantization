@@ -13,6 +13,7 @@ class QuantizationFormat(str, Enum):
     FP = "fp"
     NVFP = "nvfp"
     MXFP = "mxfp"
+    HiF = "hif"
 
 
 # 量化粒度：定义量化参数（即比例尺s和零点z）的计算和应用范围（粒度）
@@ -45,3 +46,4 @@ class ScalePrecision(str, Enum):
     FP16 = "fp16"
     E4M3 = "e4m3"
     E8M0 = "e8m0"
+    E6M2 = "e6m2"

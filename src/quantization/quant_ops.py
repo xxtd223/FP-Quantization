@@ -14,6 +14,7 @@ FP4_E2M1_MAX = 6
 FP8_E4M3_MAX = 448
 NVFP_GROUPSIZE = 16
 MXFP_GROUPSIZE = 32
+HiF_GROUPSIZE = 64
 FP32_EXPONENT_BIAS = 127
 FP32_MIN_NORMAL = 2 ** (-FP32_EXPONENT_BIAS + 1)
 
@@ -23,7 +24,8 @@ FP4_SCALE = 3 / 4
 
 ### Common utils ###
 def get_quantization_range(format: QuantizationFormat, bits: int, symmetric: bool) -> Tuple[int, int]:
-    if format in [QuantizationFormat.FP, QuantizationFormat.NVFP, QuantizationFormat.MXFP]:
+    if format in [QuantizationFormat.FP, QuantizationFormat.NVFP, QuantizationFormat.MXFP,
+                  QuantizationFormat.HiF]:
         assert bits == 4, "Currently only 4-bit NVFP is supported"
         return -FP4_E2M1_MAX, FP4_E2M1_MAX
     elif format == QuantizationFormat.INT:
@@ -57,6 +59,22 @@ def quantize_dequantize_int(x: torch.Tensor, scales: torch.Tensor, zeros: torch.
 ### Float Quantization ###
 
 # TODO
+
+### HiF Quantization ###
+def quantize_hif4(x: torch.Tensor, scales: torch.Tensor, zeros: torch.Tensor, q_min: int, q_max: int) -> torch.Tensor:
+    # HiF4 的量化步长固定为 0.25
+    # Vin = x / scales
+    # q = round(Vin / 0.25)
+    return torch.round(x / (scales * 0.25)).clamp(q_min, q_max)
+
+def dequantize_hif4(q: torch.Tensor, scales: torch.Tensor, zeros: torch.Tensor) -> torch.Tensor:
+    # V_dq = q * 0.25 * scales
+    return q * (scales * 0.25)
+
+def quantize_dequantize_hif4(x: torch.Tensor, scales: torch.Tensor, zeros: torch.Tensor, q_min: int, q_max: int) -> torch.Tensor:
+    xq = dequantize_hif4(quantize_hif4(x, scales, zeros, q_min, q_max), scales, zeros)
+    return x + (xq - x).detach()
+
 
 ### NVFP Quantization ###
 def cast_to_fp4(x):
@@ -101,6 +119,9 @@ def cast_to_eBm0(x: torch.Tensor, ebits: int, emax: int):
 
 ### Quantization functions factory ###
 def get_quantization_fns(format: QuantizationFormat, bits: int) -> Tuple[Callable, Callable, Callable]:
+    if format == QuantizationFormat.HiF:
+        if bits == 4:
+            return quantize_hif4, dequantize_hif4, quantize_dequantize_hif4
     if format in  [QuantizationFormat.FP, QuantizationFormat.NVFP, QuantizationFormat.MXFP]:
         if bits == 4:
             return quantize_fp4, dequantize_fp4, quantize_dequantize_fp4

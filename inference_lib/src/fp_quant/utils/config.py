@@ -48,6 +48,13 @@ def validate_config(config: FPQuantConfig):
             "MXFP4 can only be used with hadamard_group_size in [32, 64, 128]"
         )
     if (
+        config.forward_dtype == FPQuantDtype.HiF4
+        and config.hadamard_group_size not in [64, 128]
+    ):
+        raise ValueError(
+            "HiF4 can only be used with hadamard_group_size in [64, 128]"
+        )
+    if (
         config.forward_dtype == FPQuantDtype.MXFP8
         or config.backward_dtype == FPQuantDtype.MXFP8
         and config.forward_dtype != FPQuantDtype.MXFP4

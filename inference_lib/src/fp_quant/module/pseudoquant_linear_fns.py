@@ -7,6 +7,7 @@ from torch.autograd import Function
 from ..utils import FPQuantDtype
 from .triton.mxfp4 import mxfp4_forward_kernel_wrapper
 from .triton.nvfp4 import nvfp4_forward_kernel_wrapper
+from .triton.hif4 import hif4_forward_kernel_wrapper
 
 
 def forward_pseudoquantize(
@@ -42,6 +43,17 @@ def forward_pseudoquantize(
             global_scale,
         )
         return x_dequantized, torch.ones_like(x_dequantized, dtype=torch.bool)
+    elif dtype == FPQuantDtype.HiF4:
+        # HiF4 内部逻辑不依赖 global_scale (已内置 1/7.05)，
+        x_dequantized, mask = hif4_forward_kernel_wrapper(
+            x,
+            hadamard_matrix,
+            return_clip_mask=True
+        )
+        # 如果返回的 mask 为 None，则创建一个全 True 的 mask 以保证兼容性
+        if mask is None:
+            mask = torch.ones_like(x_dequantized, dtype=torch.bool)
+        return x_dequantized, mask
     elif dtype == FPQuantDtype.MXFP8:
         raise NotImplementedError("MXFP8 is not supported for forward quantization yet")
     else:

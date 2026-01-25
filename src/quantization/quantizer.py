@@ -11,6 +11,35 @@ from .quant_args import QuantizationFormat, QuantizationGranularity, Quantizatio
 from .quant_ops import FP8_E4M3_MAX, FP4_E2M1_MAX, FP4_SCALE, get_quantization_fns, get_quantization_range, cast_to_eBm0
 from ..helpers import split_dim
 
+
+def get_e6m2_rec_torch(sf_e6m2: torch.Tensor) -> torch.Tensor:
+    """
+    E6M2 格式的 4选1 查表  M7 = (4 - M2)/(4 + M2) * 128
+    """
+    # 提取阶码 E6
+    e6 = torch.floor(torch.log2(sf_e6m2.clamp(min=1e-20)))
+
+    # 提取 2-bit 尾数索引 M2 (0, 1, 2, 3)
+    # 计算方法：sf_norm = sf_e6m2 / 2^e6，然后映射到 0-3
+    m2 = torch.round(sf_e6m2 * torch.pow(2.0, -e6 + 2)) - 4
+    m2 = m2.clamp(0, 3)  # 确保索引合法
+
+    # M2: 0 (1.00) -> 0.0
+    # M2: 1 (1.25) -> 77.0
+    # M2: 2 (1.50) -> 43.0
+    # M2: 3 (1.75) -> 18.0
+    m7 = torch.where(m2 == 0, 0.0,
+                     torch.where(m2 == 1, 77.0,
+                                 torch.where(m2 == 2, 43.0, 18.0)))
+
+    # 如果 M2 为 0 (数值为1.0), 倒数阶码为 -e6
+    # 否则阶码多减 1
+    e8 = torch.where(m2 == 0, -e6, -e6 - 1)
+
+    # 最终组合公式: 2^E8 * (1 + M7 * 2^-7)
+    res = torch.pow(2.0, e8) * (1.0 + m7 * torch.pow(2.0, -7.0))
+    return res
+
 # Utility function for inversion.
 def get_reciprocal(x):
     if isinstance(x, torch.Tensor):
@@ -35,8 +64,13 @@ class Quantizer:
         scale_precision: str = "fp16",
         scale_min_clip: Optional[float] = None
     ):
+        # hif 格式的特殊处理
+        if format == "hif":
+            group_size = 64
+            symmetric = True
+            scale_precision = "e6m2"
         # Sanity checks
-        if format in ["fp", "nvfp", "mxfp"]:
+        if format in ["fp", "nvfp", "mxfp", "hif"]:
             assert symmetric, "Only symmetric quantization is supported for floating point formats."
 
         if granularity == "group":
@@ -101,6 +135,41 @@ class Quantizer:
         Get scale and zero point for an input tensor.
         """
         dim = x.ndim - 1 if self.dim == -1 else self.dim
+        # --- HiF4 三级缩放逻辑 ---
+        if self.format == QuantizationFormat.HiF:
+            x_reshaped, _, _ = self._reshape_before_quantization(x)
+            abs_x = x_reshaped.abs()
+
+            # 1. Level-1: E6M2 (每 64 个元素一个)
+            vmax = abs_x.max(dim=-1, keepdim=True).values
+            sf_bf16 = vmax / 7.05
+            sf_log2 = torch.log2(sf_bf16.clamp(min=1e-20))
+            e6m2_exp = torch.floor(sf_log2).clamp(-48.0, 15.0)
+            sf_norm = sf_bf16 / torch.pow(2, e6m2_exp)
+            m2_val = torch.round(sf_norm * 4.0) / 4.0
+            sf_e6m2 = m2_val * torch.pow(2, e6m2_exp)
+            # 使用 4选1 查表法计算倒数
+            e6m2_rec = get_e6m2_rec_torch(sf_e6m2)
+
+            # 2. Level-2: E1_8 (每 8 个元素共享)
+            v8 = abs_x.view(*abs_x.shape[:-1], 8, 8).max(dim=-1).values
+            e1_8 = torch.where(v8 * e6m2_rec >= 4.0, 1.0, 0.0)
+
+            # 3. Level-3: E1_16 (每 4 个元素共享)
+            v16 = abs_x.view(*abs_x.shape[:-1], 16, 4).max(dim=-1).values
+            e1_8_for_v16 = e1_8.unsqueeze(-1).repeat(1, 1, 1, 2).flatten(-2) if x.ndim > 1 else e1_8.repeat_interleave(
+                2, dim=-1)
+            e1_16 = torch.where(v16 * e6m2_rec * torch.pow(2, -e1_8_for_v16) >= 2.0, 1.0, 0.0)
+
+            # 4. 合成 Total Scale (形状为 [..., N/64, 64])
+            e1_8_full = e1_8.unsqueeze(-1).expand(*e1_8.shape, 8).flatten(-2)
+            e1_16_full = e1_16.unsqueeze(-1).expand(*e1_16.shape, 4).flatten(-2)
+            total_scale = sf_e6m2 * torch.pow(2, e1_8_full + e1_16_full)
+
+            # 将 scales 压平回原始维度对应的形状，以便 quantize 函数处理
+            # 结果形状应为 (..., num_groups, 64)
+            return total_scale, torch.zeros_like(total_scale)
+
         if self.granularity == QuantizationGranularity.GROUP:
             reduce_dim = dim + 1
         elif self.granularity == QuantizationGranularity.CHANNEL:

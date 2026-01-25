@@ -5,7 +5,7 @@ def prepare_quantization_config(
     format: str,
     pseudoquantization: bool = False
 ) -> dict[str, Any]:
-    if format in ["mxfp", "nvfp"]:
+    if format in ["mxfp", "nvfp" ,"hif"]:
         return {
             "forward_dtype": f"{format}4",
             "backward_dtype": "bf16",

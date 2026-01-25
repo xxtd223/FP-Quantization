@@ -18,7 +18,7 @@ from lm_eval.evaluator import simple_evaluate
 
 from src.metrics.perplexity import compute_perplexity
 from src.transforms.transforms import TRANSFORMS
-from src.quantization.quant_ops import NVFP_GROUPSIZE, MXFP_GROUPSIZE
+from src.quantization.quant_ops import NVFP_GROUPSIZE, MXFP_GROUPSIZE, HiF_GROUPSIZE
 from src.quantization.qconfig import prepare_quantization_config
 from src.quantization import rtn_quantization, gptq_quantization
 from src.utils.common_utils import fix_seed
@@ -157,14 +157,14 @@ def parse_args():
         "--format",
         type=str,
         default="int",
-        choices=["int", "fp", "nvfp", "mxfp"],
+        choices=["int", "fp", "nvfp", "mxfp", "hif"],
         help="Quantization format.",
     )
     parser.add_argument(
         "--scale_precision",
         type=str,
         default="fp16",
-        choices=["fp16", "e8m0", "e4m3"],
+        choices=["fp16", "e8m0", "e4m3", "e6m2"],
         help="Scale precision.",
     )
     parser.add_argument(
@@ -336,13 +336,23 @@ def parse_args():
         if args.scale_precision != "e8m0":
             args.scale_precision = "e8m0"
             print(f"Changed scale precision to e8m0 for mxfp format.")
+    elif args.format == "hif":
+        if args.w_group_size != HiF_GROUPSIZE:
+            args.w_group_size = HiF_GROUPSIZE
+            print(f"Changed weight group_size to {HiF_GROUPSIZE} for hif4 format.")
+        if args.a_group_size != HiF_GROUPSIZE:
+            args.a_group_size = HiF_GROUPSIZE
+            print(f"Changed activation group_size to {HiF_GROUPSIZE} for hif4 format.")
+        if args.scale_precision != "e6m2":
+            args.scale_precision = "e6m2"
+            print(f"Changed scale precision to e8m0 for hif4 format.")
     # Check logging
     if args.log_wandb:
         assert wandb is not None, "wandb is not installed. Please install wandb `pip install wandb`."
     # Check real_quant config
     if args.export_quantized_model:
         assert args.save_path is not None, "`save_path` must be specified when exporting quantized model."
-        assert args.format in ["nvfp", "mxfp"], "`export_quantization` is only supported for nvfp and mxfp formats."
+        assert args.format in ["nvfp", "mxfp", "hif"], "`export_quantization` is only supported for mxfp, nvfp and hif formats."
         assert args.w_bits == 4, "`export_quantization` is only supported for 4 bit weights."
         assert args.a_bits == 4, "`export_quantization` is only supported for 4 bit activations."
     return args

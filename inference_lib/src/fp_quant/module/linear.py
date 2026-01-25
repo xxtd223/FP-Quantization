@@ -114,6 +114,27 @@ class FPQuantLinear(nn.Module):
                     device=self.weight.device,
                 ),
             )
+        elif self.config.forward_dtype == FPQuantDtype.HiF4:
+            # 储存量化后的 4-bit 权重：每字节存两个
+            self.register_buffer(
+                "qweight",
+                torch.empty(
+                    self.weight.shape[0],
+                    self.weight.shape[1] // 2,
+                    dtype=torch.uint8,
+                    device=self.weight.device,
+                ),
+            )
+            # 储存共享缩放因子：每 64 个元素对应 32bit 共享信息 (8-bit E6M2 + 8-bit E1_8 + 16-bit E1_16)，在存储时视为 1 个 uint32
+            self.register_buffer(
+                "scales",
+                torch.empty(
+                    self.weight.shape[0],
+                    self.weight.shape[1] // 64,
+                    dtype=torch.uint32,
+                    device=self.weight.device,
+                ),
+            )
         else:
             raise ValueError(f"Unsupported forward dtype: {config.forward_dtype}")
 
@@ -186,8 +207,10 @@ class FPQuantLinear(nn.Module):
                 self.weight.device,
             ),
         )
-
-        if (
+        if self.config.forward_dtype == FPQuantDtype.HiF4:
+            # 1/7.05 已经写在 Triton kernel 逻辑里了
+            global_scale_val = 1.0
+        elif (
             self.config.forward_dtype == FPQuantDtype.MXFP4
             and self.config.forward_method == "quest"
         ):
@@ -298,14 +321,14 @@ class FPQuantLinear(nn.Module):
                 self.config.forward_method,
             )
         elif (
-            self.config.forward_dtype in (FPQuantDtype.MXFP4, FPQuantDtype.NVFP4)
+            self.config.forward_dtype in (FPQuantDtype.MXFP4, FPQuantDtype.NVFP4, FPQuantDtype.HiF4)
             and self.config.backward_dtype == FPQuantDtype.BF16
             and self.config.store_master_weights == True
             and self.config.pseudoquantization == False
         ):
             return FPQuant4x16MasterFn.apply(
                 x,
-                self.weight,
+                self.weight,  # 全精度权重
                 self.weight_global_scale,
                 self.act_global_scale,
                 self.bias,
@@ -314,14 +337,14 @@ class FPQuantLinear(nn.Module):
                 self.config.forward_method,
             )
         elif (
-            self.config.forward_dtype in (FPQuantDtype.MXFP4, FPQuantDtype.NVFP4)
+            self.config.forward_dtype in (FPQuantDtype.MXFP4, FPQuantDtype.NVFP4, FPQuantDtype.HiF4)
             and self.config.backward_dtype == FPQuantDtype.BF16
             and self.config.store_master_weights == False
             and self.config.pseudoquantization == False
         ):
             return FPQuant4x16NoMasterFn.apply(
                 x,
-                self.qweight,
+                self.qweight,  # 真量化权重
                 self.scales,
                 self.weight_global_scale,
                 self.act_global_scale,
@@ -331,14 +354,14 @@ class FPQuantLinear(nn.Module):
                 self.config.forward_method,
             )
         elif (
-            self.config.forward_dtype in (FPQuantDtype.MXFP4, FPQuantDtype.NVFP4)
+            self.config.forward_dtype in (FPQuantDtype.MXFP4, FPQuantDtype.NVFP4, FPQuantDtype.HiF4)
             and self.config.backward_dtype == FPQuantDtype.BF16
             and self.config.store_master_weights == True
             and self.config.pseudoquantization == True
         ):
             return PseudoQuant4x16MasterFn.apply(
                 x,
-                self.weight,
+                self.weight,  # 全精度权重
                 self.weight_global_scale,
                 self.act_global_scale,
                 self.bias,
@@ -347,14 +370,14 @@ class FPQuantLinear(nn.Module):
                 self.config.forward_method,
             )
         elif (
-            self.config.forward_dtype in (FPQuantDtype.MXFP4, FPQuantDtype.NVFP4)
+            self.config.forward_dtype in (FPQuantDtype.MXFP4, FPQuantDtype.NVFP4, FPQuantDtype.HiF4)
             and self.config.backward_dtype == FPQuantDtype.BF16
             and self.config.store_master_weights == False
             and self.config.pseudoquantization == True
         ):
             return PseudoQuant4x16NoMasterFn.apply(
                 x,
-                self.dqweight,
+                self.dqweight,  # 伪量化权重
                 self.weight_global_scale,
                 self.act_global_scale,
                 self.bias,
