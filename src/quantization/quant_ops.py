@@ -62,14 +62,13 @@ def quantize_dequantize_int(x: torch.Tensor, scales: torch.Tensor, zeros: torch.
 
 ### HiF Quantization ###
 def quantize_hif4(x: torch.Tensor, scales: torch.Tensor, zeros: torch.Tensor, q_min: int, q_max: int) -> torch.Tensor:
-    # HiF4 的量化步长固定为 0.25
     # Vin = x / scales
-    # q = round(Vin / 0.25)
-    return torch.round(x / (scales * 0.25)).clamp(q_min, q_max)
+    # q = round(Vin)
+    return torch.round(x / scales).clamp(q_min, q_max)
 
 def dequantize_hif4(q: torch.Tensor, scales: torch.Tensor, zeros: torch.Tensor) -> torch.Tensor:
-    # V_dq = q * 0.25 * scales
-    return q * (scales * 0.25)
+    # V_dq = q * scales
+    return q * scales
 
 def quantize_dequantize_hif4(x: torch.Tensor, scales: torch.Tensor, zeros: torch.Tensor, q_min: int, q_max: int) -> torch.Tensor:
     xq = dequantize_hif4(quantize_hif4(x, scales, zeros, q_min, q_max), scales, zeros)
